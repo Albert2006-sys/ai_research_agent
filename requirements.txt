@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+newspaper3k
+google-search-results
+google-generativeai
+lxml_html_clean
+google-cloud-firestore
+firebase-admin
