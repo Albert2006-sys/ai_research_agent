@@ -18,21 +18,64 @@ from serpapi import GoogleSearch
 
 # --- SETUP ---
 load_dotenv()
-try:
-    # Initialize Firebase
-    cred = credentials.Certificate("firebase-credentials.json")
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
-    db = firestore.client()
 
-    # Initialize Generative AI
+# Global variables to track service availability
+db = None
+google_api_key = None
+serpapi_api_key = None
+services_initialized = False
+
+def initialize_services():
+    """Initialize all external services (Firebase, Google AI, etc.)"""
+    global db, google_api_key, serpapi_api_key, services_initialized
+    
+    missing_services = []
+    
+    # Initialize Firebase
+    try:
+        if not os.path.exists("firebase-credentials.json"):
+            missing_services.append("Firebase credentials file (firebase-credentials.json)")
+        else:
+            cred = credentials.Certificate("firebase-credentials.json")
+            if not firebase_admin._apps:
+                firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            print("✓ Firebase initialized successfully")
+    except Exception as e:
+        missing_services.append(f"Firebase (Error: {e})")
+
+    # Initialize API keys
     google_api_key = os.getenv("GOOGLE_API_KEY")
     serpapi_api_key = os.getenv("SERPAPI_API_KEY")
-    if not google_api_key or not serpapi_api_key:
-        raise ValueError("API keys must be set.")
-    genai.configure(api_key=google_api_key)
-except Exception as e:
-    print(f"CRITICAL: Failed to initialize services: {e}")
+    
+    if not google_api_key:
+        missing_services.append("GOOGLE_API_KEY environment variable")
+    if not serpapi_api_key:
+        missing_services.append("SERPAPI_API_KEY environment variable")
+    
+    # Initialize Generative AI if key is available
+    if google_api_key:
+        try:
+            genai.configure(api_key=google_api_key)
+            print("✓ Google Generative AI initialized successfully")
+        except Exception as e:
+            missing_services.append(f"Google Generative AI (Error: {e})")
+    
+    if missing_services:
+        print("⚠️  WARNING: Some services could not be initialized:")
+        for service in missing_services:
+            print(f"   - {service}")
+        print("\n📋 To fully configure the backend:")
+        print("   1. Copy .env.example to .env and add your API keys")
+        print("   2. Copy firebase-credentials.json.example to firebase-credentials.json and add your Firebase credentials")
+        print("   3. Restart the backend")
+        print("\n🚀 Backend is starting but some features may not work without proper configuration...\n")
+    else:
+        services_initialized = True
+        print("✅ All services initialized successfully!")
+
+# Initialize services on startup
+initialize_services()
 
 # --- Pydantic Data Models ---
 class Source(BaseModel):
@@ -64,6 +107,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 # --- Helper Functions ---
 def search_the_web(query: str) -> List[str]:
     print(f"Searching for: {query}...")
+    if not serpapi_api_key:
+        print("SerpAPI key not available - returning demo URLs")
+        # Return some demo URLs for testing when API is not available
+        return [
+            "https://en.wikipedia.org/wiki/Main_Page",
+            "https://www.example.com"
+        ]
     try:
         params = {"q": query, "api_key": serpapi_api_key, "num": 5, "engine": "google"}
         search = GoogleSearch(params)
@@ -78,6 +128,30 @@ def scrape_and_process_urls(urls: List[str]) -> (str, List[Source]):
     print("Scraping URLs...")
     combined_content = ""
     sources_data = []
+    
+    # If no internet access or in demo mode, provide sample content
+    if not serpapi_api_key and len(urls) <= 2:  # Demo URLs
+        print("Demo mode: Using sample content")
+        combined_content = """
+        --- SAMPLE CONTENT FOR DEMO ---
+        This is sample content that would normally be scraped from web sources.
+        In a real environment with proper API keys and internet access, this would contain
+        actual content from relevant web pages related to the user's query.
+        
+        The AI research agent would normally:
+        1. Search the web using SerpAPI
+        2. Scrape content from relevant pages
+        3. Process and summarize the information
+        4. Return a comprehensive response with sources
+        """
+        sources_data.append(Source(
+            title="Demo Content",
+            url="https://example.com/demo",
+            publish_date=None,
+            authors=["Demo Author"]
+        ))
+        return combined_content, sources_data
+    
     for url in urls:
         try:
             article = Article(url)
@@ -99,6 +173,25 @@ def summarize_content(content: str, query: str) -> str:
     print("Summarizing content with Google Gemini...")
     if not content:
         return "No content was scraped to summarize."
+    
+    if not google_api_key:
+        return f"""**Demo Response for: "{query}"**
+
+⚠️ This is a demo response as the Google API key is not configured.
+
+Based on your query "{query}", here's what a typical response would look like:
+
+**Key Points:**
+- This is a placeholder response showing the expected format
+- The actual response would contain relevant information from web sources
+- AI-generated summaries would be provided here
+
+**To get real responses:**
+1. Configure your Google API key in the .env file
+2. Restart the backend service
+
+*Content length: {len(content)} characters from scraped sources*"""
+    
     prompt = f"""
     Based on the following web content, provide a clear and comprehensive answer to the user's query.
     Instructions:
@@ -117,9 +210,31 @@ def summarize_content(content: str, query: str) -> str:
         return "Failed to generate summary due to an AI model error."
 
 # --- API ENDPOINTS ---
+@app.get("/health")
+async def health_check():
+    """Health check endpoint to verify backend status and configuration."""
+    status = {
+        "status": "healthy",
+        "services": {
+            "firebase": db is not None,
+            "google_ai": google_api_key is not None,
+            "serpapi": serpapi_api_key is not None,
+        },
+        "fully_configured": services_initialized,
+        "message": "Backend is running"
+    }
+    
+    if not services_initialized:
+        status["message"] = "Backend is running but not fully configured. Check logs for missing services."
+        
+    return status
+
 @app.get("/conversations", response_model=List[ConversationMeta])
 async def get_all_conversations():
     """Retrieves metadata for all conversations."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database service is not available. Please configure Firebase credentials.")
+    
     try:
         # QUICK FIX: Removed the .order_by() clause to prevent the need for a Firestore index.
         # This gets the app working quickly. The list will not be sorted by date.
@@ -134,6 +249,9 @@ async def get_all_conversations():
 @app.get("/conversations/{conversation_id}", response_model=Conversation)
 async def get_conversation(conversation_id: str):
     """Retrieves a single, full conversation by its ID."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database service is not available. Please configure Firebase credentials.")
+    
     doc_ref = db.collection('conversations').document(conversation_id)
     doc = doc_ref.get()
     if doc.exists:
@@ -170,7 +288,15 @@ async def create_conversation(request: dict):
         createdAt=datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
 
-    # Save to Firestore
-    db.collection('conversations').document(convo_id).set(new_convo.dict())
+    # Save to Firestore if available
+    if db:
+        try:
+            db.collection('conversations').document(convo_id).set(new_convo.dict())
+            print(f"Conversation {convo_id} saved to Firestore")
+        except Exception as e:
+            print(f"Warning: Could not save conversation to Firestore: {e}")
+    else:
+        print("Warning: Database not available - conversation not persisted")
+    
     return new_convo
 
