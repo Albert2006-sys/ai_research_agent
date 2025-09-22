@@ -12,6 +12,7 @@ function App() {
   const [activeConversation, setActiveConversation] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Fetches the list of conversation titles when the app first loads
   const fetchConversations = async () => {
@@ -76,9 +77,22 @@ function App() {
         onNewChat={handleNewChat}
         onSelectConversation={handleSelectConversation}
         activeConversationId={activeConversation?.id}
+        isMobileOpen={isMobileMenuOpen}
+        onMobileClose={() => setIsMobileMenuOpen(false)}
       />
       
       <main className="main-content">
+        {/* Mobile Menu Toggle */}
+        <button 
+          className="mobile-menu-toggle"
+          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          aria-label="Toggle menu"
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M3 12H21M3 6H21M3 18H21" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+
         {error && <div className="error-banner">{error}</div>}
 
         {/* Show a loading spinner only when starting a new chat */}
